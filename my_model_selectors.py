@@ -76,8 +76,38 @@ class SelectorBIC(ModelSelector):
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+
+        best_score = float("-inf")
+        best_model = None
+        num_features = self.X.shape[1]
+
+        #L is the likelihood of the fitted model, p is the number of parameters, and N is the number of data points
+        for i_components in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                new_model = self.base_model(i_components)
+                logL = new_model.score(self.X, self.lengths)
+                logN = np.log(len(self.X))
+
+                ''' p is the number of model parameters in the test.
+                 https://discussions.udacity.com/t/number-of-parameters-bic-calculation/233235/4
+                Initial state occupation probabilities = numStates
+                Transition probabilities = numStates*(numStates - 1)
+                Emission probabilities = numStates*numFeatures*2 = numMeans+numCovars
+                Parameters = Initial state occupation probabilities + Transition probabilities + Emission probabilities
+                '''
+                initial_state_occupation_probabilities = i_components
+                transition_probabilities = i_components * (i_components -1)
+                emission_probabilities = i_components * num_features * 2
+                p = initial_state_occupation_probabilities + transition_probabilities + emission_probabilities
+
+                #Calculate the score
+                new_score = -2 * logL + p * logN
+                #Only keep the max value
+                best_score, best_model = max((best_score,best_model),(new_score,new_model))
+            except:
+                pass
+
+        return best_model
 
 
 class SelectorDIC(ModelSelector):
@@ -90,10 +120,38 @@ class SelectorDIC(ModelSelector):
     '''
 
     def select(self):
-        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        best_score = float("-inf")
+        best_model = None
+        num_features = self.X.shape[1]
+        for i_components in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                new_model = self.base_model(i_components)
+                logL = new_model.score(self.X, self.lengths)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+                #Calculate all other words average score
+                partial_score = 0
+                count = 0
+                for word in self.words:
+                    if word != self.this_word:
+                        new_X, new_lengths = self.hwords[word]
+                        try:
+                            partial_score += hmm_model.score(new_X, new_lengths)
+                            count += 1
+                        except:
+                            pass
+                if count > 0:
+                    logAllButword = partial_score/count
+                else:
+                    logAllButword = 0
+
+                #Calculate the total score
+                new_score = logL - logAllButword
+                #Only keep the max value
+                best_score, best_model = max((best_score,best_model),(new_score,new_model))
+            except:
+                pass
+
+        return best_model
 
 
 class SelectorCV(ModelSelector):
@@ -104,5 +162,42 @@ class SelectorCV(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        n_splits = 3
+        if len(self.sequences) < 2:
+            return None
+        elif len(self.sequences) == 2:
+            n_splits = 2
+        split_method = KFold(n_splits=n_splits)
+
+        best_score = float("-inf")
+        best_model = None
+        for i_components in range(self.min_n_components, self.max_n_components + 1):
+            partial_score = 0
+            i = 0
+            for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                new_model = None
+                try:
+                    #I combine sequences with the train split
+                    train_X, train_lengths = combine_sequences(cv_train_idx, self.sequences)
+                    
+                    #I create the HMM model
+                    new_model = GaussianHMM(n_components=i_components, covariance_type="diag", n_iter=1000,
+                                            random_state=self.random_state, verbose=False).fit(train_X, train_lengths)
+                    #Now I add the test data
+                    test_X, test_lengths = combine_sequences(cv_test_idx, self.sequences)
+                    #I calculate score with the added test data
+                    partial_score += hmm_model.score(test_X, test_lengths)
+                    i+=1
+                except:
+                    pass 
+            if i > 0:
+                #Calculate average
+                new_score = partial_score / i
+            else:
+                new_score = 0
+            if new_score > best_score:
+                best_score = new_score
+                best_model = new_model
+                
+        return best_model
+
